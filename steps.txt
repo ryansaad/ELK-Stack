@@ -1,0 +1,198 @@
+## Setup and Installation Guide
+### Prerequisites
+
+* An **AWS account** to provision two EC2 instances.
+* **SSH** access to both VMs.
+* A Security Group configured to allow inbound traffic on ports:
+    * **22** (SSH) from your IP.
+    * **5044** (Beats input for Logstash).
+    * **9200** (Elasticsearch API).
+    * **5601** (Kibana UI).
+    * **8080** (Application port).
+* **Java (OpenJDK 17)** installed on the ELK stack server (a prerequisite for Elasticsearch and Logstash).
+
+### Part 1: Setting up the ELK Stack Server
+
+This server will host **Elasticsearch**, **Logstash**, and **Kibana**.
+
+#### Step 1: Launch EC2 Instance and Install Java
+
+1.  Launch a **T2.Medium Ubuntu 24.04 LTS** EC2 instance. Name it `elk-server`.
+2.  SSH into the instance.
+3.  Update packages and install **Java**:
+    ```bash
+    sudo apt update && sudo apt upgrade -y
+    sudo apt install -y openjdk-17-jdk
+    java -version # Verify installation
+    ```
+
+#### Step 2: Install and Configure Elasticsearch
+
+1.  **Install Elasticsearch:** Add the Elastic repository signing key and repository to your system, then install the package.
+    ```bash
+    sudo apt-get update && sudo apt-get install wget apt-transport-https -y
+    wget -qO - [https://artifacts.elastic.co/GPG-KEY-elasticsearch](https://artifacts.elastic.co/GPG-KEY-elasticsearch) | sudo gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] [https://artifacts.elastic.co/packages/8.x/apt](https://artifacts.elastic.co/packages/8.x/apt) stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+    sudo apt-get update && sudo apt-get install elasticsearch
+    ```
+2.  **Configure Elasticsearch:** Open the configuration file and set the network host and cluster name.
+    ```bash
+    sudo vim /etc/elasticsearch/elasticsearch.yml
+    ```
+    Add or modify the following lines in the file:
+    ```yaml
+    # ------------------- Node -------------------
+    node.name: node-1
+    # ------------------- Network -------------------
+    network.host: "0.0.0.0"
+    # ------------------- Discovery -------------------
+    discovery.type: single-node
+    ```
+3.  **Start and Enable Elasticsearch Service:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable elasticsearch.service
+    sudo systemctl start elasticsearch.service
+    ```
+4.  **Verify Installation:**
+    ```bash
+    curl -X GET "http://localhost:9200"
+    # This should return a JSON response with cluster information.
+    ```
+
+#### Step 3: Install and Configure Logstash
+
+1.  **Install Logstash:**
+    ```bash
+    sudo apt-get install logstash
+    ```
+2.  **Configure Logstash Input:** Create a configuration file to define the input from Filebeat and the output to Elasticsearch.
+    ```bash
+    sudo vim /etc/logstash/conf.d/logstash.conf
+    ```
+    Add the following content to the file:
+    ```conf
+    input {
+      beats {
+        port => 5044
+      }
+    }
+    filter {
+      grok {
+        match => { "message" => "%{APP_LOG_PATTERN}" } # Replace with your log pattern
+      }
+      # Add other filters as needed (e.g., mutate, date)
+    }
+    output {
+      elasticsearch {
+        hosts => ["http://localhost:9200"]
+      }
+    }
+    ```
+3.  **Start and Enable Logstash Service:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable logstash.service
+    sudo systemctl start logstash.service
+    ```
+
+#### Step 4: Install and Configure Kibana
+
+1.  **Install Kibana:**
+    ```bash
+    sudo apt-get install kibana
+    ```
+2.  **Configure Kibana:** Open the configuration file and set the server host and Elasticsearch host.
+    ```bash
+    sudo vim /etc/kibana/kibana.yml
+    ```
+    Add or modify the following lines:
+    ```yaml
+    server.host: "0.0.0.0"
+    elasticsearch.hosts: ["http://localhost:9200"]
+    ```
+3.  **Start and Enable Kibana Service:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable kibana.service
+    sudo systemctl start kibana.service
+    ```
+4.  **Verify Access:** Open your web browser and navigate to `http://ELK_SERVER_IP:5601`. You should see the Kibana login page.
+
+### Part 2: Setting up the Application Server
+
+This server will host the application and **Filebeat**.
+
+#### Step 5: Launch EC2 Instance and Install Application Dependencies
+
+1.  Launch a second **T2.Medium Ubuntu 24.04 LTS** EC2 instance. Name it `app-server`.
+2.  SSH into the instance.
+3.  Update packages and install **Java** and **Maven** to build the application:
+    ```bash
+    sudo apt update && sudo apt upgrade -y
+    sudo apt install -y openjdk-17-jdk maven
+    ```
+
+#### Step 6: Clone and Run the Application
+
+1.  **Clone the Repository:** Clone your application's source code from GitHub.
+    ```bash
+    git clone [https://github.com/YOUR_GITHUB_USERNAME/your-app-repo.git](https://github.com/YOUR_GITHUB_USERNAME/your-app-repo.git)
+    cd your-app-repo
+    ```
+2.  **Build the Application:**
+    ```bash
+    mvn clean package -DskipTests # Build the JAR file
+    ```
+3.  **Run the Application and Capture Logs:** Use `nohup` to run the application in the background and redirect logs to a file.
+    ```bash
+    nohup java -jar target/app.jar > app.log 2>&1 &
+    ```
+
+#### Step 7: Install and Configure Filebeat
+
+1.  **Install Filebeat:** Add the Elastic repository signing key and install the Filebeat package.
+    ```bash
+    sudo apt-get update && sudo apt-get install wget apt-transport-https -y
+    wget -qO - [https://artifacts.elastic.co/GPG-KEY-elasticsearch](https://artifacts.elastic.co/GPG-KEY-elasticsearch) | sudo gpg --dearmor -o /usr/share/keyrings/elasticsearch-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/elasticsearch-keyring.gpg] [https://artifacts.elastic.co/packages/8.x/apt](https://artifacts.elastic.co/packages/8.x/apt) stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+    sudo apt-get update && sudo apt-get install filebeat
+    ```
+2.  **Configure Filebeat:** Open the configuration file to specify the log file path and the Logstash server.
+    ```bash
+    sudo vim /etc/filebeat/filebeat.yml
+    ```
+    Modify the `filebeat.inputs` and `output.logstash` sections to look like this:
+    ```yaml
+    # ============================ Filebeat inputs =============================
+    filebeat.inputs:
+    - type: log
+      enabled: true
+      paths:
+        - /path/to/your/app.log # <-- UPDATE THIS PATH
+    # =============================== Outputs =================================
+    output.logstash:
+      hosts: ["LOGSTASH_SERVER_IP:5044"] # <-- UPDATE THIS IP
+    #
+    # To enable Elasticsearch output, uncomment the following lines:
+    # output.elasticsearch:
+    #   hosts: ["localhost:9200"]
+    ```
+3.  **Start and Enable Filebeat Service:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable filebeat.service
+    sudo systemctl start filebeat.service
+    ```
+
+### Part 3: Verify Log Monitoring in Kibana
+
+#### Step 8: Create Index Pattern and View Logs
+
+1.  Go to the **Kibana** UI (`http://ELK_SERVER_IP:5601`).
+2.  In the menu, go to **Stack Management** > **Index Patterns** > **Create index pattern**.
+3.  Enter a pattern (e.g., `filebeat-*`) and select `@timestamp` as the time field.
+4.  Go to the **Discover** tab in the menu. You should now see logs from your application appearing in real-time.
+5.  Use the search bar and filters to analyze your logs.
+
+---
